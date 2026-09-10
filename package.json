@@ -1,8 +1,9 @@
 {
   "name": "skill-scout",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "Discover relevant agent skills before a task and recommend reviewed installations.",
+  "description": "Discover relevant skills, MCP servers, and plugins before a task and recommend reviewed installations.",
+  "repository": { "type": "git", "url": "https://github.com/kenktchau-cmyk/skill-scout.git" },
   "type": "module",
   "engines": { "node": ">=22" },
   "scripts": {

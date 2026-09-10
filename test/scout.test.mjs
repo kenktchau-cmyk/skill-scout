@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { parseSkill, termsFor, rank, scanLocal, discover, defaultRoots } from '../skills/skill-scout/scripts/scout.mjs';
+import { parseSkill, parsePlugin, termsFor, rank, scanLocal, discover as discoverAll, defaultRoots } from '../skills/skill-scout/scripts/scout.mjs';
+const discover = options => discoverAll({ kind: 'skills', ...options });
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const script = path.join(root, 'skills/skill-scout/scripts/scout.mjs');
@@ -186,4 +187,69 @@ test('CLI provides help and nonzero validation errors', () => {
   const invalid = spawnSync(process.execPath, [script, '--query', 'pdf', '--limit', 'NaN'], { encoding: 'utf8' });
   assert.equal(invalid.status, 1);
   assert.match(invalid.stderr, /limit must be/);
+});
+
+test('all-mode returns skills, MCP and plugins without forwarding GitHub credentials to registry or endpoints', async () => {
+  const calls = [];
+  const server = { name: 'io.example/github', version: '1.0.0', description: 'GitHub repository tools',
+    repository: { url: 'https://github.com/example/mcp' },
+    remotes: [{ type: 'streamable-http', url: 'https://example.test/mcp', headers: [{ name: 'API-Key', isRequired: true, value: 'DO-NOT-COPY' }] }],
+    packages: [{ registryType: 'npm', identifier: '@example/github', version: '1.0.0', runtimeArguments: ['DO-NOT-RUN'] }] };
+  const routes = {
+    '/repos/one/skills/git/trees/HEAD': { tree: [{ type: 'blob', path: 'github/SKILL.md', sha: sha(1) }] },
+    [`/repos/one/skills/git/blobs/${sha(1)}`]: { encoding: 'base64', content: Buffer.from(skill('github', 'GitHub code review')).toString('base64') },
+    '/repos/one/plugins/git/trees/HEAD': { tree: [{ type: 'blob', path: 'plugins/github/.codex-plugin/plugin.json', sha: sha(2) }] },
+    [`/repos/one/plugins/git/blobs/${sha(2)}`]: { encoding: 'base64', content: Buffer.from(JSON.stringify({ name: 'github', description: 'GitHub connection', apps: './.app.json' })).toString('base64') },
+    '/v0.1/servers': { servers: [{ server, _meta: { 'io.modelcontextprotocol.registry/official': { status: 'active' } } }], metadata: {} },
+  };
+  const result = await discoverAll({ query: 'github', roots: [], repos: ['one/skills'], pluginRepos: ['one/plugins'], token: 'test-token', fetchImpl: fakeGithub(routes,calls) });
+  assert.deepEqual(new Set(result.candidates.map(item => item.kind)), new Set(['skill','mcp','plugin']));
+  assert.equal(result.candidateGroups.plugin[0].host, 'codex');
+  assert.equal(result.candidateGroups.plugin[0].installed, null);
+  assert.equal(result.candidateGroups.mcp[0].connectionState, 'unknown');
+  assert.deepEqual(result.candidateGroups.mcp[0].remotes[0].requiredHeaders, ['API-Key']);
+  assert.ok(!JSON.stringify(result).includes('DO-NOT-'));
+  assert.ok(calls.every(({url}) => ['api.github.com','registry.modelcontextprotocol.io'].includes(new URL(url).hostname)));
+  for (const call of calls.filter(({url}) => new URL(url).hostname === 'registry.modelcontextprotocol.io')) {
+    assert.equal(call.options.headers.Authorization, undefined);
+    assert.equal(call.options.redirect, 'error');
+  }
+});
+
+test('MCP discovery deduplicates versions, skips inactive entries and exposes pagination limits', async () => {
+  const item = (status,name='io.example/github',url='https://github.com/example/mcp') => ({
+    server: { name, version: '1', description: 'GitHub tools', repository: { url } },
+    _meta: { 'io.modelcontextprotocol.registry/official': { status } },
+  });
+  const result = await discoverAll({ query: 'github tools', kind:'mcp', fetchImpl: fakeGithub({
+    '/v0.1/servers': { servers: [item('active'),item('active'),item('deleted','io.example/deleted'),item('deprecated','io.example/old'),item('active','io.example/github-unsafe','javascript:alert(1)')], metadata:{nextCursor:'next'} },
+  }) });
+  assert.equal(result.candidateGroups.mcp.length, 2);
+  assert.equal(result.candidateGroups.mcp.find(item => item.name.endsWith('unsafe')).repositoryUrl, null);
+  assert.equal(result.sources[0].status,'partial');
+  assert.ok(result.sources[0].warnings.includes('more-registry-pages'));
+});
+
+test('MCP-only and plugin-only offline discovery issue no requests and mark inventory as unchecked', async () => {
+  for (const kind of ['mcp','plugins','all']) {
+    const result = await discoverAll({ query:'github',kind,offline:true,roots:[],fetchImpl:() => assert.fail('no network') });
+    assert.deepEqual(result.candidates,[]);
+    assert.equal(result.inventoryCoverage.plugins,'host-check-required');
+  }
+});
+
+test('MCP failures remain visible when other discovery sources succeed', async () => {
+  const result = await discoverAll({ query:'github',roots:[],repos:[],pluginRepos:[],fetchImpl:fakeGithub({
+    '/v0.1/servers':{status:429,body:{secret:'never-echo'}},
+  }) });
+  assert.equal(result.sources[0].status,'error');
+  assert.deepEqual(result.sources[0].warnings,['registry-http-429']);
+  assert.ok(!JSON.stringify(result).includes('never-echo'));
+});
+
+test('plugin manifest parsing and kind validation reject invalid input', async () => {
+  assert.equal(parsePlugin('{invalid'),null);
+  assert.equal(parsePlugin(JSON.stringify({name:'$(bad)',description:'test'})),null);
+  assert.deepEqual(parsePlugin(JSON.stringify({name:'github',description:'GitHub tools',mcpServers:'./.mcp.json'})).components,['mcpServers']);
+  await assert.rejects(discoverAll({query:'github',kind:'anything',fetchImpl:() => assert.fail('no network')}),/kind must be/);
 });
