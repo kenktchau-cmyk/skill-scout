@@ -1,0 +1,13 @@
+{
+  "name": "skill-scout",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Discover relevant agent skills before a task and recommend reviewed installations.",
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test": "node --test",
+    "scout": "node skills/skill-scout/scripts/scout.mjs"
+  },
+  "license": "MIT"
+}

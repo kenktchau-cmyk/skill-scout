@@ -1,0 +1,6 @@
+interface:
+  display_name: "Skill Scout"
+  short_description: "Find useful skills before a task and explain the fit"
+  default_prompt: "Use $skill-scout before this task to find relevant skills, review candidates, and recommend useful installations."
+policy:
+  allow_implicit_invocation: true
